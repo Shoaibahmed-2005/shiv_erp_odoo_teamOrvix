@@ -131,10 +131,7 @@ export async function deliverSalesOrder(req, res) {
       "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'delivered','sales_order',$2,$3)",
       [req.user.id, req.params.id, JSON.stringify({ status, total_delivered: totalDelivered })]
     );
-    await client.query("INSERT INTO notifications (role,title,message,type) VALUES ('business_owner',$1,$2,'order_status')", [
-      `Sales Order ${so.order_number} ${status.replace(/_/g, ' ')}`,
-      `${totalDelivered} units delivered. Status: ${status.replace(/_/g, ' ')}`
-    ]);
+    await createNotification(client, { role: "business_owner", title: `Sales Order ${so.order_number} ${status.replace(/_/g, ' ')}`, message: `${totalDelivered} units delivered. Status: ${status.replace(/_/g, ' ')}`, type: "order_status" });
     return so;
   });
   emitToAll("order:status_changed", { type: "sales", id: updated.id, status: updated.status });
@@ -186,10 +183,7 @@ export async function receivePurchaseOrder(req, res) {
       "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'received','purchase_order',$2,$3)",
       [req.user.id, req.params.id, JSON.stringify({ status, total_received: totalReceived })]
     );
-    await client.query("INSERT INTO notifications (role,title,message,type) VALUES ('inventory_manager',$1,$2,'order_status')", [
-      `Purchase ${po.order_number} ${status.replace(/_/g, ' ')}`,
-      `${totalReceived} units received into inventory. Status: ${status.replace(/_/g, ' ')}`
-    ]);
+    await createNotification(client, { role: "inventory_manager", title: `Purchase ${po.order_number} ${status.replace(/_/g, ' ')}`, message: `${totalReceived} units received into inventory. Status: ${status.replace(/_/g, ' ')}`, type: "order_status" });
     return po;
   });
   emitToAll("order:status_changed", { type: "purchase", id: updated.id, status: updated.status });
@@ -218,15 +212,9 @@ export async function completeManufacturingOrder(req, res) {
       [req.user.id, mo.id, JSON.stringify({ mo_number: mo.mo_number, product_id: mo.product_id, quantity: mo.quantity })]
     );
     // Notify
-    await client.query(
-      "INSERT INTO notifications (role,title,message,type) VALUES ('business_owner',$1,$2,'order_status')",
-      [`MO ${mo.mo_number} completed`, `${mo.quantity} unit(s) of product #${mo.product_id} produced and added to inventory.`]
-    );
+    await createNotification(client, { role: "business_owner", title: `MO ${mo.mo_number} completed`, message: `${mo.quantity} unit(s) of product #${mo.product_id} produced and added to inventory.`, type: "order_status" });
     if (mo.triggered_by_sales_order_id) {
-      await client.query(
-        "INSERT INTO notifications (role,title,message,type) VALUES ('sales_user',$1,$2,'order_status')",
-        [`Production complete — check Sales Order`, `Manufacturing for SO #${mo.triggered_by_sales_order_id} is done. ${mo.quantity} units now in stock.`]
-      );
+      await createNotification(client, { role: "sales_user", title: `Production complete — check Sales Order`, message: `Manufacturing for SO #${mo.triggered_by_sales_order_id} is done. ${mo.quantity} units now in stock.`, type: "order_status" });
     }
     return result;
   });
@@ -250,43 +238,44 @@ export const inventory = async (_req, res) => res.json((await query("SELECT id,n
 export const stockFlow = async (_req, res) => res.json((await query("SELECT reference_type, SUM(change_qty) AS quantity FROM stock_ledger GROUP BY reference_type ORDER BY reference_type")).rows);
 
 export async function quickReorder(req, res) {
-  const productId = req.params.id;
-  const result = await withTransaction(async (client) => {
-    const product = (await client.query("SELECT * FROM products WHERE id=$1", [productId])).rows[0];
-    if (!product) throw new Error("Product not found");
-    if (!product.default_vendor_id) throw new Error(`No default vendor set for ${product.name}. Edit the product to set one.`);
+  try {
+    const productId = req.params.id;
+    const result = await withTransaction(async (client) => {
+      const product = (await client.query("SELECT * FROM products WHERE id=$1", [productId])).rows[0];
+      if (!product) throw new Error("Product not found");
+      if (!product.default_vendor_id) throw new Error(`No default vendor set for ${product.name}. Please edit the product and set a Default Vendor first.`);
 
-    const reorderQty = Math.max(1, Number(product.reorder_point) - Number(product.on_hand_qty) + Number(product.reorder_point));
-    const poNumber = await nextNumber(client, "PO", "purchase_orders", "order_number");
-    const total = reorderQty * Number(product.cost_price || 0);
+      const reorderQty = Math.max(1, Number(product.reorder_point) - Number(product.on_hand_qty) + Number(product.reorder_point));
+      const poNumber = await nextNumber(client, "PO", "purchase_orders", "order_number");
+      const total = reorderQty * Number(product.cost_price || 0);
 
-    const po = (await client.query(
-      `INSERT INTO purchase_orders (order_number, vendor_id, status, total, auto_generated)
-       VALUES ($1, $2, 'draft', $3, true) RETURNING *`,
-      [poNumber, product.default_vendor_id, total]
-    )).rows[0];
+      const po = (await client.query(
+        `INSERT INTO purchase_orders (order_number, vendor_id, status, total, auto_generated)
+         VALUES ($1, $2, 'draft', $3, true) RETURNING *`,
+        [poNumber, product.default_vendor_id, total]
+      )).rows[0];
 
-    await client.query(
-      `INSERT INTO purchase_order_items (purchase_order_id, product_id, quantity, unit_price, line_total)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [po.id, productId, reorderQty, product.cost_price || 0, total]
-    );
+      await client.query(
+        `INSERT INTO purchase_order_items (purchase_order_id, product_id, quantity, unit_price, line_total)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [po.id, productId, reorderQty, product.cost_price || 0, total]
+      );
 
-    await client.query(
-      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'quick_reorder','product',$2,$3)",
-      [req.user.id, productId, JSON.stringify({ po_number: poNumber, reorder_qty: reorderQty })]
-    );
+      await client.query(
+        "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'quick_reorder','product',$2,$3)",
+        [req.user.id, productId, JSON.stringify({ po_number: poNumber, reorder_qty: reorderQty })]
+      );
 
-    await client.query(
-      "INSERT INTO notifications (role,title,message,type) VALUES ('purchase_user',$1,$2,'order_status')",
-      [`Quick reorder: ${poNumber}`, `PO created for ${reorderQty}× ${product.name} (below reorder point)`]
-    );
+      await createNotification(client, { role: "purchase_user", title: `Quick reorder: ${poNumber}`, message: `PO created for ${reorderQty}× ${product.name} (below reorder point)`, type: "order_status" });
 
-    return { ...po, product_name: product.name, reorder_qty: reorderQty };
-  });
+      return { ...po, product_name: product.name, reorder_qty: reorderQty };
+    });
 
-  emitToAll("procurement:triggered", { type: "quick_reorder", ...result });
-  res.status(201).json(result);
+    emitToAll("procurement:triggered", { type: "quick_reorder", ...result });
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Reorder failed" });
+  }
 }
 
 export const notifications = async (req, res) => res.json((await query("SELECT * FROM notifications WHERE user_id=$1 OR role=$2 OR role IN ('admin','business_owner') ORDER BY id DESC LIMIT 50", [req.user.id, req.user.role])).rows);

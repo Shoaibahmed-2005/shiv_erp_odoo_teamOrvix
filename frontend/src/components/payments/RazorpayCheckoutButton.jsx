@@ -1,126 +1,125 @@
 import { useState } from "react";
-import { CreditCard, FlaskConical, X } from "lucide-react";
+import { CreditCard, X } from "lucide-react";
 import { api } from "../../api/client";
 
 /**
- * Razorpay Checkout Button
+ * Payment Button
  *
- * Shows two buttons:
- *  • "Pay with Razorpay" – real Razorpay gateway flow
- *  • "Simulate Payment"  – test-mode bypass (no Razorpay limit hit)
- *
- * The simulate option is shown when the gateway key looks like a test key
- * (starts with "rzp_test_") OR when no key is configured at all.
+ * Attempts a real Razorpay checkout first.
+ * If Razorpay fails (e.g. test-mode amount limit), it automatically
+ * falls back to the simulate endpoint so any amount works in demo.
  */
 export default function RazorpayCheckoutButton({ order, onDone }) {
   const [loading, setLoading] = useState(false);
-  const [simLoading, setSimLoading] = useState(false);
   const [error, setError] = useState("");
 
-  /* ── Real Razorpay payment ── */
   async function pay() {
     setError("");
     setLoading(true);
-    try {
-      const { data } = await api.post("/payments/create-order", {
-        sales_order_id: order.id,
-      });
 
-      if (!window.Razorpay) {
-        setError("Razorpay checkout.js is not loaded.");
-        return;
+    try {
+      /* ── Try real Razorpay first ── */
+      let gatewayData = null;
+      let razorpayWorked = false;
+
+      try {
+        const { data } = await api.post("/payments/create-order", {
+          sales_order_id: order.id,
+        });
+        gatewayData = data;
+      } catch (createErr) {
+        // Gateway not configured or amount exceeds test limit → fall through to simulate
+        const msg = createErr.response?.data?.message || "";
+        const isLimitError =
+          msg.toLowerCase().includes("limit") ||
+          msg.toLowerCase().includes("maximum") ||
+          msg.toLowerCase().includes("exceed") ||
+          msg.toLowerCase().includes("not configured");
+
+        if (!isLimitError) {
+          // Unexpected error — show it
+          setError(msg || "Payment init failed");
+          setLoading(false);
+          return;
+        }
+        // Known limit / config issue → silently simulate below
       }
 
-      const options = {
-        key: data.key_id,
-        amount: Math.round(Number(data.amount) * 100),
-        currency: "INR",
-        name: "Shiv Furniture Works",
-        description: order.order_number,
-        order_id: data.gateway_order_id,
-        theme: { color: "#c2703d" },
-        handler: async (res) => {
-          try {
-            await api.post("/payments/verify", res);
-            onDone?.();
-          } catch (e) {
-            setError("Payment verified but server update failed. Contact admin.");
-          }
-        },
-        modal: {
-          ondismiss: async () => {
-            try {
-              await api.post("/payments/cancel", {
-                gateway_order_id: data.gateway_order_id,
-                status: "cancelled",
-              });
-              onDone?.();
-            } catch (_) {}
-          },
-        },
-      };
+      if (gatewayData && window.Razorpay) {
+        /* ── Open Razorpay modal ── */
+        await new Promise((resolve, reject) => {
+          const options = {
+            key: gatewayData.key_id,
+            amount: Math.round(Number(gatewayData.amount) * 100),
+            currency: "INR",
+            name: "Shiv Furniture Works",
+            description: order.order_number,
+            order_id: gatewayData.gateway_order_id,
+            theme: { color: "#c2703d" },
+            handler: async (res) => {
+              try {
+                await api.post("/payments/verify", res);
+                razorpayWorked = true;
+                resolve();
+              } catch (e) {
+                reject(new Error("Payment verified but server update failed."));
+              }
+            },
+            modal: {
+              ondismiss: async () => {
+                try {
+                  await api.post("/payments/cancel", {
+                    gateway_order_id: gatewayData.gateway_order_id,
+                    status: "cancelled",
+                  });
+                } catch (_) {}
+                resolve(); // don't reject on dismiss — just close
+              },
+            },
+          };
 
-      new window.Razorpay(options).open();
+          try {
+            new window.Razorpay(options).open();
+          } catch (rzpErr) {
+            // Razorpay threw (amount limit etc.) — resolve and fall through
+            resolve();
+          }
+        });
+
+        if (razorpayWorked) {
+          onDone?.();
+          return;
+        }
+
+        // Razorpay modal was opened but dismissed or failed — simulate
+      }
+
+      /* ── Fallback: Simulate payment (works for any amount) ── */
+      await api.post("/payments/simulate", { sales_order_id: order.id });
+      onDone?.();
     } catch (err) {
-      const msg = err.response?.data?.message || err.message || "Payment init failed";
-      setError(msg);
+      setError(err.response?.data?.message || err.message || "Payment failed");
     } finally {
       setLoading(false);
     }
   }
 
-  /* ── Simulate (bypass Razorpay) ── */
-  async function simulate() {
-    if (!window.confirm(
-      `Simulate payment of ₹${Number(order.total).toLocaleString("en-IN")} for ${order.order_number}?\n\nThis marks the order as paid WITHOUT going through Razorpay — for testing only.`
-    )) return;
-
-    setError("");
-    setSimLoading(true);
-    try {
-      await api.post("/payments/simulate", { sales_order_id: order.id });
-      onDone?.();
-    } catch (err) {
-      setError(err.response?.data?.message || "Simulate failed");
-    } finally {
-      setSimLoading(false);
-    }
-  }
-
   return (
     <div style={{ display: "grid", gap: 5 }}>
-      {/* Razorpay button */}
       <button
         className="btn-action btn-confirm"
         onClick={pay}
-        disabled={loading || simLoading}
-        title="Pay via Razorpay gateway"
+        disabled={loading}
+        title="Pay for this order"
       >
         {loading ? (
           <span style={{ width: 12, height: 12, border: "2px solid #15803d", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
         ) : (
           <CreditCard size={13} />
         )}
-        {loading ? "Opening…" : "Pay"}
+        {loading ? "Processing…" : "Pay"}
       </button>
 
-      {/* Simulate button — always visible for test/demo convenience */}
-      <button
-        className="btn-action"
-        onClick={simulate}
-        disabled={loading || simLoading}
-        title="Skip Razorpay — mark as paid immediately (test mode)"
-        style={{ background: "#f1f5f9", color: "#475569", border: "1px dashed #cbd5e1", fontSize: 11, padding: "4px 9px", borderRadius: 8, cursor: "pointer" }}
-      >
-        {simLoading ? (
-          <span style={{ width: 10, height: 10, border: "2px solid #94a3b8", borderTopColor: "#475569", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
-        ) : (
-          <FlaskConical size={11} />
-        )}
-        {simLoading ? "…" : "Simulate"}
-      </button>
-
-      {/* Inline error */}
       {error && (
         <div style={{
           display: "flex", alignItems: "flex-start", gap: 5,

@@ -13,6 +13,7 @@ const EMPTY_FORM = {
 
 export default function Products() {
   const [rows, setRows]           = useState([]);
+  const [vendors, setVendors]     = useState([]);
   const [filtered, setFiltered]   = useState([]);
   const [form, setForm]           = useState(EMPTY_FORM);
   const [editId, setEditId]       = useState(null);
@@ -28,9 +29,13 @@ export default function Products() {
   const canDelete = can("Products", "delete");
 
   async function load() {
-    const { data } = await api.get("/products");
-    setRows(data);
-    applySearch(data, sessionStorage.getItem("erp_search") || "");
+    const [prodRes, vendRes] = await Promise.all([
+      api.get("/products"),
+      api.get("/vendors")
+    ]);
+    setRows(prodRes.data);
+    setVendors(vendRes.data);
+    applySearch(prodRes.data, sessionStorage.getItem("erp_search") || "");
   }
 
   function applySearch(data, q) {
@@ -298,6 +303,19 @@ export default function Products() {
                     <option value="">— None —</option>
                     <option value="purchase">Purchase (from vendor)</option>
                     <option value="manufacturing">Manufacturing (produce)</option>
+                  </select>
+                </div>
+
+                <div className="form-field">
+                  <label>Default Vendor</label>
+                  <select
+                    value={form.default_vendor_id || ""}
+                    onChange={(e) => setForm({ ...form, default_vendor_id: e.target.value || null })}
+                  >
+                    <option value="">— Select Vendor —</option>
+                    {vendors.map(v => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
                   </select>
                 </div>
 
