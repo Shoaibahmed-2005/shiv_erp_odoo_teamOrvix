@@ -73,6 +73,7 @@ function StatCard({ icon: Icon, label, value, note, tone }) {
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
+  const [reordering, setReordering] = useState({});
   const { socket } = useOutletContext();
   const { user } = useAuth();
   const role = user?.role || "admin";
@@ -95,7 +96,21 @@ export default function Dashboard() {
     };
   }, [socket]);
 
+  async function reorder(product) {
+    if (reordering[product.id]) return;
+    setReordering((r) => ({ ...r, [product.id]: true }));
+    try {
+      await api.post(`/inventory/reorder/${product.id}`);
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || "Reorder failed");
+    } finally {
+      setReordering((r) => ({ ...r, [product.id]: false }));
+    }
+  }
+
   const lowStock = data?.lowStock || [];
+  const recentActivity = data?.recentActivity || [];
 
   const stats = useMemo(() => data ? [
     [ShoppingCart, "Total Sales Orders",    data.sales.count,                          "+12%",           ""],
@@ -177,7 +192,9 @@ export default function Dashboard() {
               <div className="stock-alert" key={p.id}>
                 <b>{p.name}</b>
                 <small>{p.on_hand_qty} units left — Reorder at {p.reorder_point}</small>
-                <a>Reorder <ArrowUpRight size={13} /></a>
+                <a style={{ cursor: "pointer" }} onClick={() => reorder(p)}>
+                  {reordering[p.id] ? "Reordering…" : <><ArrowUpRight size={13} /> Reorder</>}
+                </a>
                 <i className={i === 0 ? "redDot" : "orangeDot"} />
               </div>
             ))
@@ -189,9 +206,26 @@ export default function Dashboard() {
         <div className="panel-head">
           <h3>Recent Activity</h3>
         </div>
-        <p style={{ color: "#94a3b8", fontSize: 14, margin: 0 }}>
-          Activity updates live as orders are confirmed, products are received, and manufacturing completes.
-        </p>
+        {recentActivity.length === 0 ? (
+          <p style={{ color: "#94a3b8", fontSize: 14, margin: 0 }}>
+            Activity updates live as orders are confirmed, products are received, and manufacturing completes.
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {recentActivity.map((a) => (
+              <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #f1f5f9", paddingBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", textTransform: "capitalize" }}>
+                    {a.action} {a.entity} <span style={{ color: "#94a3b8", fontWeight: 400 }}>#{a.entity_id}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>
+                    By {a.user_name || "System"} • {new Date(a.created_at).toLocaleString("en-IN")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

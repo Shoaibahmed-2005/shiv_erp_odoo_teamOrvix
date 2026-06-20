@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useOutletContext } from "react-router-dom";
 import { api } from "../../api/client";
 
 export default function AuditLogs() {
@@ -27,6 +28,8 @@ export default function AuditLogs() {
     ));
   }
 
+  const { socket } = useOutletContext() || {};
+
   useEffect(() => { load(); }, []);
 
   useEffect(() => {
@@ -34,6 +37,20 @@ export default function AuditLogs() {
     window.addEventListener("erp:search", onSearch);
     return () => window.removeEventListener("erp:search", onSearch);
   }, [rows]);
+
+  useEffect(() => {
+    if (!socket) return;
+    socket.on("order:status_changed", load);
+    socket.on("payment:status_changed", load);
+    socket.on("procurement:triggered", load);
+    socket.on("stock:updated", load);
+    return () => {
+      socket.off("order:status_changed", load);
+      socket.off("payment:status_changed", load);
+      socket.off("procurement:triggered", load);
+      socket.off("stock:updated", load);
+    };
+  }, [socket]);
 
   const display = searchVal ? filtered : rows;
 

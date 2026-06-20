@@ -8,11 +8,14 @@ import { createNotification } from "../utils/notifications.js";
 import { runProcurementForSalesOrder } from "./procurementEngine.js";
 
 const listSql = {
-  products: "SELECT p.*, v.name AS vendor_name FROM products p LEFT JOIN vendors v ON v.id=p.default_vendor_id ORDER BY p.id",
+  products: "SELECT p.*, v.name AS vendor_name FROM products p LEFT JOIN vendors v ON v.id=p.default_vendor_id WHERE p.is_active=true ORDER BY p.id",
   customers: "SELECT * FROM customers ORDER BY id",
   vendors: "SELECT * FROM vendors ORDER BY id",
   workCenters: "SELECT * FROM work_centers ORDER BY id",
-  salesOrders: `SELECT so.*, c.name AS customer_name FROM sales_orders so LEFT JOIN customers c ON c.id=so.customer_id ORDER BY so.id DESC`,
+  salesOrders: `SELECT so.*, c.name AS customer_name,
+    (SELECT po.order_number FROM purchase_orders po WHERE po.triggered_by_sales_order_id = so.id AND po.auto_generated = true ORDER BY po.id LIMIT 1) AS linked_po_number,
+    (SELECT mo.mo_number FROM manufacturing_orders mo WHERE mo.triggered_by_sales_order_id = so.id AND mo.auto_generated = true ORDER BY mo.id LIMIT 1) AS linked_mo_number
+    FROM sales_orders so LEFT JOIN customers c ON c.id=so.customer_id ORDER BY so.id DESC`,
   purchaseOrders: `SELECT po.*, v.name AS vendor_name FROM purchase_orders po LEFT JOIN vendors v ON v.id=po.vendor_id ORDER BY po.id DESC`,
   manufacturingOrders: `SELECT mo.*, p.name AS product_name FROM manufacturing_orders mo LEFT JOIN products p ON p.id=mo.product_id ORDER BY mo.id DESC`,
   boms: `SELECT b.*, p.name AS product_name FROM boms b LEFT JOIN products p ON p.id=b.product_id ORDER BY b.id DESC`,
@@ -29,18 +32,30 @@ export const updatePermission = async (req, res) => {
   res.json((await query("UPDATE role_permissions SET can_view=$1, can_create=$2, can_edit=$3, can_delete=$4 WHERE id=$5 RETURNING *", [can_view, can_create, can_edit, can_delete, req.params.id])).rows[0]);
 };
 
-export const createProduct = async (req, res) => res.status(201).json((await query(
-  `INSERT INTO products (name,category,sales_price,cost_price,uom,on_hand_qty,reorder_point,procurement_strategy,procure_on_demand,procurement_type,default_vendor_id,default_bom_id)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-  [req.body.name, req.body.category, req.body.sales_price || 0, req.body.cost_price || 0, req.body.uom || "unit", req.body.on_hand_qty || 0, req.body.reorder_point || 10, req.body.procurement_strategy || "mts", !!req.body.procure_on_demand, req.body.procurement_type || null, req.body.default_vendor_id || null, req.body.default_bom_id || null]
-)).rows[0]);
+export const createProduct = async (req, res) => {
+  const product = (await query(
+    `INSERT INTO products (name,category,sales_price,cost_price,uom,on_hand_qty,reorder_point,procurement_strategy,procure_on_demand,procurement_type,default_vendor_id,default_bom_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [req.body.name, req.body.category, req.body.sales_price || 0, req.body.cost_price || 0, req.body.uom || "unit", req.body.on_hand_qty || 0, req.body.reorder_point || 10, req.body.procurement_strategy || "mts", !!req.body.procure_on_demand, req.body.procurement_type || null, req.body.default_vendor_id || null, req.body.default_bom_id || null]
+  )).rows[0];
+  await query("INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'created','product',$2,$3)", [req.user.id, product.id, JSON.stringify({ name: product.name, category: product.category })]);
+  res.status(201).json(product);
+};
 
-export const updateProduct = async (req, res) => res.json((await query(
-  `UPDATE products SET name=$1, category=$2, sales_price=$3, cost_price=$4, uom=$5, on_hand_qty=$6, reorder_point=$7,
-   procurement_strategy=$8, procure_on_demand=$9, procurement_type=$10, default_vendor_id=$11, default_bom_id=$12 WHERE id=$13 RETURNING *`,
-  [req.body.name, req.body.category, req.body.sales_price || 0, req.body.cost_price || 0, req.body.uom || "unit", req.body.on_hand_qty || 0, req.body.reorder_point || 10, req.body.procurement_strategy || "mts", !!req.body.procure_on_demand, req.body.procurement_type || null, req.body.default_vendor_id || null, req.body.default_bom_id || null, req.params.id]
-)).rows[0]);
-export const removeProduct = async (req, res) => { await query("UPDATE products SET is_active=false WHERE id=$1", [req.params.id]); res.status(204).end(); };
+export const updateProduct = async (req, res) => {
+  const product = (await query(
+    `UPDATE products SET name=$1, category=$2, sales_price=$3, cost_price=$4, uom=$5, on_hand_qty=$6, reorder_point=$7,
+     procurement_strategy=$8, procure_on_demand=$9, procurement_type=$10, default_vendor_id=$11, default_bom_id=$12 WHERE id=$13 RETURNING *`,
+    [req.body.name, req.body.category, req.body.sales_price || 0, req.body.cost_price || 0, req.body.uom || "unit", req.body.on_hand_qty || 0, req.body.reorder_point || 10, req.body.procurement_strategy || "mts", !!req.body.procure_on_demand, req.body.procurement_type || null, req.body.default_vendor_id || null, req.body.default_bom_id || null, req.params.id]
+  )).rows[0];
+  await query("INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'updated','product',$2,$3)", [req.user.id, product.id, JSON.stringify({ name: product.name })]);
+  res.json(product);
+};
+export const removeProduct = async (req, res) => {
+  await query("UPDATE products SET is_active=false WHERE id=$1", [req.params.id]);
+  await query("INSERT INTO audit_logs (user_id,action,entity,entity_id) VALUES ($1,'deleted','product',$2)", [req.user.id, req.params.id]);
+  res.status(204).end();
+};
 export const stockHistory = async (req, res) => res.json((await query("SELECT * FROM stock_ledger WHERE product_id=$1 ORDER BY id DESC", [req.params.id])).rows);
 
 export const createSimple = (table, columns) => async (req, res) => {
@@ -96,16 +111,31 @@ export async function confirmSalesOrder(req, res) {
 export async function deliverSalesOrder(req, res) {
   const updated = await withTransaction(async (client) => {
     const items = await client.query("SELECT * FROM sales_order_items WHERE sales_order_id=$1", [req.params.id]);
+    let totalDelivered = 0;
     for (const item of items.rows) {
-      const qty = Number(req.body.items?.find((i) => Number(i.id) === Number(item.id))?.quantity || 0);
+      // If no specific items passed, deliver all outstanding quantities
+      const outstanding = Number(item.quantity) - Number(item.delivered_qty || 0);
+      const qty = req.body.items?.length
+        ? Number(req.body.items?.find((i) => Number(i.id) === Number(item.id))?.quantity || 0)
+        : outstanding;
       if (qty > 0) {
         await moveStock(client, { productId: item.product_id, changeQty: -qty, reason: "Sales delivery", referenceType: "sales_order", referenceId: req.params.id });
         await client.query("UPDATE sales_order_items SET delivered_qty = delivered_qty + $1 WHERE id=$2", [qty, item.id]);
         await client.query("UPDATE products SET reserved_qty = GREATEST(0, reserved_qty - $1) WHERE id=$2", [qty, item.product_id]);
+        totalDelivered += qty;
       }
     }
     const status = (await client.query("SELECT bool_and(delivered_qty >= quantity) AS done FROM sales_order_items WHERE sales_order_id=$1", [req.params.id])).rows[0].done ? "fully_delivered" : "partially_delivered";
-    return (await client.query("UPDATE sales_orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [status, req.params.id])).rows[0];
+    const so = (await client.query("UPDATE sales_orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [status, req.params.id])).rows[0];
+    await client.query(
+      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'delivered','sales_order',$2,$3)",
+      [req.user.id, req.params.id, JSON.stringify({ status, total_delivered: totalDelivered })]
+    );
+    await client.query("INSERT INTO notifications (role,title,message,type) VALUES ('business_owner',$1,$2,'order_status')", [
+      `Sales Order ${so.order_number} ${status.replace(/_/g, ' ')}`,
+      `${totalDelivered} units delivered. Status: ${status.replace(/_/g, ' ')}`
+    ]);
+    return so;
   });
   emitToAll("order:status_changed", { type: "sales", id: updated.id, status: updated.status });
   res.json(updated);
@@ -121,33 +151,87 @@ export async function createPurchaseOrder(req, res) {
   });
   res.status(201).json(result);
 }
-export const confirmPurchaseOrder = async (req, res) => res.json((await query("UPDATE purchase_orders SET status='confirmed', updated_at=NOW() WHERE id=$1 RETURNING *", [req.params.id])).rows[0]);
+export async function confirmPurchaseOrder(req, res) {
+  const updated = await withTransaction(async (client) => {
+    const po = (await client.query("UPDATE purchase_orders SET status='confirmed', updated_at=NOW() WHERE id=$1 RETURNING *", [req.params.id])).rows[0];
+    if (!po) throw new Error("Purchase order not found");
+    await client.query(
+      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'confirmed','purchase_order',$2,$3)",
+      [req.user.id, req.params.id, JSON.stringify({ status: 'confirmed' })]
+    );
+    return po;
+  });
+  emitToAll("order:status_changed", { type: "purchase", id: updated.id, status: updated.status });
+  res.json(updated);
+}
 export async function receivePurchaseOrder(req, res) {
   const updated = await withTransaction(async (client) => {
     const items = await client.query("SELECT * FROM purchase_order_items WHERE purchase_order_id=$1", [req.params.id]);
+    let totalReceived = 0;
     for (const item of items.rows) {
-      const qty = Number(req.body.items?.find((i) => Number(i.id) === Number(item.id))?.quantity || 0);
+      // If no specific items passed, receive ALL outstanding quantities
+      const outstanding = Number(item.quantity) - Number(item.received_qty || 0);
+      const qty = req.body.items?.length
+        ? Number(req.body.items?.find((i) => Number(i.id) === Number(item.id))?.quantity || 0)
+        : outstanding;
       if (qty > 0) {
         await moveStock(client, { productId: item.product_id, changeQty: qty, reason: "Purchase receipt", referenceType: "purchase_order", referenceId: req.params.id });
         await client.query("UPDATE purchase_order_items SET received_qty = received_qty + $1 WHERE id=$2", [qty, item.id]);
+        totalReceived += qty;
       }
     }
     const status = (await client.query("SELECT bool_and(received_qty >= quantity) AS done FROM purchase_order_items WHERE purchase_order_id=$1", [req.params.id])).rows[0].done ? "fully_received" : "partially_received";
-    return (await client.query("UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [status, req.params.id])).rows[0];
+    const po = (await client.query("UPDATE purchase_orders SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [status, req.params.id])).rows[0];
+    await client.query(
+      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'received','purchase_order',$2,$3)",
+      [req.user.id, req.params.id, JSON.stringify({ status, total_received: totalReceived })]
+    );
+    await client.query("INSERT INTO notifications (role,title,message,type) VALUES ('inventory_manager',$1,$2,'order_status')", [
+      `Purchase ${po.order_number} ${status.replace(/_/g, ' ')}`,
+      `${totalReceived} units received into inventory. Status: ${status.replace(/_/g, ' ')}`
+    ]);
+    return po;
   });
   emitToAll("order:status_changed", { type: "purchase", id: updated.id, status: updated.status });
+  emitToAll("stock:updated", {});
   res.json(updated);
 }
 
 export async function completeManufacturingOrder(req, res) {
   const updated = await withTransaction(async (client) => {
     const mo = (await client.query("SELECT * FROM manufacturing_orders WHERE id=$1 FOR UPDATE", [req.params.id])).rows[0];
-    const components = await client.query("SELECT * FROM bom_components WHERE bom_id=$1", [mo.bom_id]);
-    for (const c of components.rows) await moveStock(client, { productId: c.component_product_id, changeQty: -Number(c.quantity) * Number(mo.quantity), reason: "Manufacturing consumption", referenceType: "manufacturing_order", referenceId: mo.id });
+    if (!mo) throw new Error("Manufacturing order not found");
+    if (mo.status === 'completed') throw new Error("Already completed");
+    // Consume components
+    if (mo.bom_id) {
+      const components = await client.query("SELECT * FROM bom_components WHERE bom_id=$1", [mo.bom_id]);
+      for (const c of components.rows) {
+        await moveStock(client, { productId: c.component_product_id, changeQty: -Number(c.quantity) * Number(mo.quantity), reason: "Manufacturing consumption", referenceType: "manufacturing_order", referenceId: mo.id });
+      }
+    }
+    // Produce finished goods
     await moveStock(client, { productId: mo.product_id, changeQty: mo.quantity, reason: "Manufacturing output", referenceType: "manufacturing_order", referenceId: mo.id });
-    return (await client.query("UPDATE manufacturing_orders SET status='completed', completed_at=NOW() WHERE id=$1 RETURNING *", [mo.id])).rows[0];
+    const result = (await client.query("UPDATE manufacturing_orders SET status='completed', completed_at=NOW() WHERE id=$1 RETURNING *", [mo.id])).rows[0];
+    // Audit
+    await client.query(
+      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'completed','manufacturing_order',$2,$3)",
+      [req.user.id, mo.id, JSON.stringify({ mo_number: mo.mo_number, product_id: mo.product_id, quantity: mo.quantity })]
+    );
+    // Notify
+    await client.query(
+      "INSERT INTO notifications (role,title,message,type) VALUES ('business_owner',$1,$2,'order_status')",
+      [`MO ${mo.mo_number} completed`, `${mo.quantity} unit(s) of product #${mo.product_id} produced and added to inventory.`]
+    );
+    if (mo.triggered_by_sales_order_id) {
+      await client.query(
+        "INSERT INTO notifications (role,title,message,type) VALUES ('sales_user',$1,$2,'order_status')",
+        [`Production complete — check Sales Order`, `Manufacturing for SO #${mo.triggered_by_sales_order_id} is done. ${mo.quantity} units now in stock.`]
+      );
+    }
+    return result;
   });
   emitToAll("order:status_changed", { type: "manufacturing", id: updated.id, status: updated.status });
+  emitToAll("stock:updated", { productId: updated.product_id });
   res.json(updated);
 }
 export const updateWorkOrder = async (req, res) => res.json((await query("UPDATE work_orders SET status=$1 WHERE id=$2 AND manufacturing_order_id=$3 RETURNING *", [req.body.status, req.params.woId, req.params.id])).rows[0]);
@@ -162,8 +246,49 @@ export async function createBom(req, res) {
   res.status(201).json(bom);
 }
 
-export const inventory = async (_req, res) => res.json((await query("SELECT id,name,category,on_hand_qty,reserved_qty,(on_hand_qty-reserved_qty) AS free_qty,reorder_point FROM products ORDER BY name")).rows);
+export const inventory = async (_req, res) => res.json((await query("SELECT id,name,category,on_hand_qty,reserved_qty,(on_hand_qty-reserved_qty) AS free_qty,reorder_point,procure_on_demand,procurement_type,default_vendor_id FROM products WHERE is_active=true ORDER BY name")).rows);
 export const stockFlow = async (_req, res) => res.json((await query("SELECT reference_type, SUM(change_qty) AS quantity FROM stock_ledger GROUP BY reference_type ORDER BY reference_type")).rows);
+
+export async function quickReorder(req, res) {
+  const productId = req.params.id;
+  const result = await withTransaction(async (client) => {
+    const product = (await client.query("SELECT * FROM products WHERE id=$1", [productId])).rows[0];
+    if (!product) throw new Error("Product not found");
+    if (!product.default_vendor_id) throw new Error(`No default vendor set for ${product.name}. Edit the product to set one.`);
+
+    const reorderQty = Math.max(1, Number(product.reorder_point) - Number(product.on_hand_qty) + Number(product.reorder_point));
+    const poNumber = await nextNumber(client, "PO", "purchase_orders", "order_number");
+    const total = reorderQty * Number(product.cost_price || 0);
+
+    const po = (await client.query(
+      `INSERT INTO purchase_orders (order_number, vendor_id, status, total, auto_generated)
+       VALUES ($1, $2, 'draft', $3, true) RETURNING *`,
+      [poNumber, product.default_vendor_id, total]
+    )).rows[0];
+
+    await client.query(
+      `INSERT INTO purchase_order_items (purchase_order_id, product_id, quantity, unit_price, line_total)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [po.id, productId, reorderQty, product.cost_price || 0, total]
+    );
+
+    await client.query(
+      "INSERT INTO audit_logs (user_id,action,entity,entity_id,new_value) VALUES ($1,'quick_reorder','product',$2,$3)",
+      [req.user.id, productId, JSON.stringify({ po_number: poNumber, reorder_qty: reorderQty })]
+    );
+
+    await client.query(
+      "INSERT INTO notifications (role,title,message,type) VALUES ('purchase_user',$1,$2,'order_status')",
+      [`Quick reorder: ${poNumber}`, `PO created for ${reorderQty}× ${product.name} (below reorder point)`]
+    );
+
+    return { ...po, product_name: product.name, reorder_qty: reorderQty };
+  });
+
+  emitToAll("procurement:triggered", { type: "quick_reorder", ...result });
+  res.status(201).json(result);
+}
+
 export const notifications = async (req, res) => res.json((await query("SELECT * FROM notifications WHERE user_id=$1 OR role=$2 OR role IN ('admin','business_owner') ORDER BY id DESC LIMIT 50", [req.user.id, req.user.role])).rows);
 export const readNotification = async (req, res) => res.json((await query("UPDATE notifications SET is_read=true WHERE id=$1 RETURNING *", [req.params.id])).rows[0]);
 export const readAllNotifications = async (req, res) => { await query("UPDATE notifications SET is_read=true WHERE user_id=$1 OR role=$2", [req.user.id, req.user.role]); res.json({ ok: true }); };
@@ -282,12 +407,13 @@ export async function simulatePayment(req, res) {
 
 
 export async function dashboard(_req, res) {
-  const [sales, purchase, manufacturing, lowStock, stockFlowRows] = await Promise.all([
+  const [sales, purchase, manufacturing, lowStock, stockFlowRows, recentActivity] = await Promise.all([
     query("SELECT COUNT(*)::int AS count, COALESCE(SUM(total),0)::numeric AS total FROM sales_orders"),
     query("SELECT COUNT(*)::int AS count FROM purchase_orders"),
     query("SELECT COUNT(*)::int AS count FROM manufacturing_orders WHERE status <> 'completed'"),
-    query("SELECT id,name,on_hand_qty,reorder_point FROM products WHERE on_hand_qty <= reorder_point ORDER BY on_hand_qty"),
-    query("SELECT reference_type, SUM(change_qty)::int AS quantity FROM stock_ledger GROUP BY reference_type")
+    query("SELECT id,name,on_hand_qty,reorder_point FROM products WHERE is_active=true AND on_hand_qty <= reorder_point ORDER BY on_hand_qty"),
+    query("SELECT reference_type, SUM(change_qty)::int AS quantity FROM stock_ledger GROUP BY reference_type"),
+    query("SELECT a.*, u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 10")
   ]);
-  res.json({ sales: sales.rows[0], purchase: purchase.rows[0], manufacturing: manufacturing.rows[0], lowStock: lowStock.rows, stockFlow: stockFlowRows.rows });
+  res.json({ sales: sales.rows[0], purchase: purchase.rows[0], manufacturing: manufacturing.rows[0], lowStock: lowStock.rows, stockFlow: stockFlowRows.rows, recentActivity: recentActivity.rows });
 }

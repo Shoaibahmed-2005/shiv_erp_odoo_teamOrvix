@@ -61,6 +61,7 @@ router.patch("/manufacturing-orders/:id/work-orders/:woId", checkPermission("Man
 router.post("/manufacturing-orders/:id/complete", checkPermission("Manufacturing", "edit"), erp.completeManufacturingOrder);
 
 router.get("/inventory", checkPermission("Inventory"), erp.inventory);
+router.post("/inventory/reorder/:id", checkPermission("Inventory", "edit"), erp.quickReorder);
 router.get("/inventory/stock-flow", checkPermission("Inventory"), erp.stockFlow);
 router.get("/notifications", erp.notifications);
 router.patch("/notifications/:id/read", erp.readNotification);

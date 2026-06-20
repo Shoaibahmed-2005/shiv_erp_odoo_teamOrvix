@@ -68,7 +68,8 @@ export default function SalesOrders() {
     if (!socket) return;
     socket.on("order:status_changed", load);
     socket.on("payment:status_changed", load);
-    return () => { socket.off("order:status_changed", load); socket.off("payment:status_changed", load); };
+    socket.on("procurement:triggered", load);
+    return () => { socket.off("order:status_changed", load); socket.off("payment:status_changed", load); socket.off("procurement:triggered", load); };
   }, [socket]);
 
   async function confirm(id) {
@@ -161,7 +162,7 @@ export default function SalesOrders() {
           <thead>
             <tr>
               <th>Order #</th><th>Customer</th><th>Status</th>
-              <th>Payment</th><th>Total</th><th>Actions</th>
+              <th>Payment</th><th>Total</th><th>Linked PO/MO</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -176,6 +177,15 @@ export default function SalesOrders() {
                     : <span className="pill-draft">N/A</span>}
                 </td>
                 <td><strong>₹{Number(o.total).toLocaleString("en-IN")}</strong></td>
+                <td>
+                  {o.linked_po_number && (
+                    <span className="pill-pending" title="Auto-created Purchase Order">PO: {o.linked_po_number}</span>
+                  )}
+                  {o.linked_mo_number && (
+                    <span className="pill-in_progress" title="Auto-created Manufacturing Order">MO: {o.linked_mo_number}</span>
+                  )}
+                  {!o.linked_po_number && !o.linked_mo_number && <span style={{ color: "#94a3b8", fontSize: 12 }}>—</span>}
+                </td>
                 <td>
                   <div className="actions">
                     {o.payment_required && o.payment_status !== "paid" && (
