@@ -27,6 +27,7 @@ export async function moveStock(client, { productId, changeQty, reason, referenc
 
 export async function reserveStock(client, productId, qty) {
   if (qty <= 0) return;
+  // NOTE: Do NOT emit stock:updated here — this runs inside a transaction.
+  // The caller emits AFTER commit to avoid the frontend reading stale data.
   await client.query("UPDATE products SET reserved_qty = reserved_qty + $1 WHERE id = $2", [qty, productId]);
-  emitToAll("stock:updated", { productId });
 }

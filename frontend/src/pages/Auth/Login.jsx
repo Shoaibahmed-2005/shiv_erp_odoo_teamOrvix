@@ -42,21 +42,16 @@ export default function Login() {
       {/* Floating login card — right side */}
       <div style={styles.cardWrap}>
         <form style={styles.card} onSubmit={submit} autoComplete="off">
-          {/* Logo badge */}
+          {/* Logo — prominent centered brand mark */}
           <div style={styles.logoBadge}>
             <img
               src="/logo.png"
-              alt="SF"
-              style={{ width: 40, height: 40, objectFit: "contain", borderRadius: 10 }}
-              onError={(e) => {
-                e.target.style.display = "none";
-                e.target.nextSibling.style.display = "flex";
-              }}
+              alt="Shiv Furniture ERP"
+              style={styles.logoImg}
             />
-            <span style={{ display: "none", alignItems: "center", justifyContent: "center", width: 40, height: 40, background: "#c2703d", borderRadius: 10, color: "white", fontWeight: 800, fontSize: 15 }}>SF</span>
           </div>
 
-          <div style={{ marginBottom: 20 }}>
+          <div style={{ marginBottom: 20, textAlign: "center" }}>
             <h2 style={styles.title}>Welcome back</h2>
             <p style={styles.subtitle}>Sign in to your ERP account</p>
           </div>
@@ -188,13 +183,22 @@ const styles = {
     backdropFilter: "blur(12px)",
   },
   logoBadge: {
-    marginBottom: 18,
+    marginBottom: 16,
     display: "flex",
+    flexDirection: "column",
     alignItems: "center",
+    justifyContent: "center",
+  },
+  logoImg: {
+    width: 130,
+    height: "auto",
+    objectFit: "contain",
+    filter: "drop-shadow(0 2px 8px rgba(194,112,61,0.18))",
+    borderRadius: 12,
   },
   title: {
     margin: 0,
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 800,
     color: "#0f172a",
     letterSpacing: "-0.4px",

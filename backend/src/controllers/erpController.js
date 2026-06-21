@@ -104,7 +104,10 @@ export async function confirmSalesOrder(req, res) {
     await createNotification(client, { role: "business_owner", title: "Sales order confirmed", message: `${updated.order_number} is confirmed`, type: "order_status" });
     return updated;
   });
+  // Emit AFTER commit so frontend reads committed data
   emitToAll("order:status_changed", { type: "sales", id: order.id, status: order.status });
+  emitToAll("stock:updated", {});          // refresh inventory page
+  emitToAll("procurement:triggered", {});  // refresh dashboard low-stock panel
   res.json(order);
 }
 
@@ -135,6 +138,7 @@ export async function deliverSalesOrder(req, res) {
     return so;
   });
   emitToAll("order:status_changed", { type: "sales", id: updated.id, status: updated.status });
+  emitToAll("stock:updated", {});  // reserved_qty changed — refresh inventory
   res.json(updated);
 }
 
